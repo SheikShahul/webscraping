@@ -1,0 +1,96 @@
+const fs = require('fs');
+const { chromium } = require('playwright');
+
+(async () => {
+    const urls = fs.readFileSync('1.txt', 'utf-8').split('\n').filter(Boolean);
+    const dataFilePath = '1.1.json';
+
+    let collectedResults = [];
+    try {
+        if (fs.existsSync(dataFilePath)) {
+            collectedResults = JSON.parse(fs.readFileSync(dataFilePath, 'utf-8'));
+        }
+    } catch (err) {
+        console.error('Error reading existing data:', err);
+    }
+
+    const saveDataToFile = () => {
+        fs.writeFileSync(dataFilePath, JSON.stringify(collectedResults, null, 4));
+        console.log(`Collected JSON data saved to '${dataFilePath}'`);
+    };
+
+    let collectingData = false;
+
+    const testJson = async (response) => {
+        try {
+            const jsonData = await response.json();
+            if (jsonData.notes || jsonData.publication) {
+                collectingData = true;
+            }
+
+            if (collectingData) {
+                if (jsonData.publication) {
+                    const contributors = jsonData.publication.contributors.map(contributor => ({
+                        name: contributor.name,
+                        owner: contributor.owner,
+                        social: contributor.social.filter(s => s.url).map(s => ({ url: s.url }))
+                    }));
+
+                    const publicationData = {
+                        publication: {
+                            id: jsonData.publication.id,
+                            contributors: contributors
+                        }
+                    };
+                    collectedResults.push(publicationData);
+                    saveDataToFile();
+                }
+
+                if (jsonData.contacts) {
+                    const emailContacts = (jsonData.contacts.email || []).filter(email => email.email).map(email => ({
+                        email: email.email
+                    }));
+
+                    const socialContacts = (jsonData.contacts.social || []).filter(social => social.url).map(social => ({
+                        url: social.url
+                    }));
+
+                    if (collectedResults.length > 0) {
+                        collectedResults[collectedResults.length - 1].publication.contacts = {
+                            email: emailContacts,
+                            social: socialContacts
+                        };
+                        saveDataToFile();
+                    }
+                }
+            }
+        } catch (err) {
+            // Ignore responses that are not JSON
+        }
+    };
+
+    const browser = await chromium.launch({ headless: true });
+    const page = await browser.newPage();
+
+    try {
+        page.on('response', testJson);
+
+        await page.goto('https://reletter.com/login');
+        await page.fill('input#email', '');
+        await page.click('button[type="submit"]');
+        await page.waitForSelector('input#password');
+        await page.fill('input#password', '');
+        await page.click('button[type="submit"]');
+        await page.waitForTimeout(2000);
+
+        for (const url of urls) {
+            await page.goto(url);
+            await page.waitForTimeout(1000);
+            await page.click('text=Contacts');
+            await page.waitForTimeout(1000);
+            await page.waitForTimeout(500);
+        }
+    } finally {
+        await browser.close();
+    }
+})();
